@@ -86,3 +86,31 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+
+.question-label {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .35rem .75rem;
+}
+
+.question-id {
+  display: inline-block;
+  padding: .13rem .4rem;
+  border: 1px solid currentColor;
+  color: var(--ink);
+  white-space: nowrap;
+}
+
+a.question-id {
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+
+.task-search {
+  margin-bottom: 1rem;
+}
+
+.task-search input {
+  max-width: 22rem;
+}
