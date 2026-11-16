@@ -90,7 +90,7 @@ function subjectPage() {
     <div class="subject-banner ${subject}"><div class="subject-title"><p class="eyebrow">${exams[exam]} / ПОДГОТОВКА</p><h1>${name}</h1><p>${desc}</p></div>
     <div class="mark" aria-hidden="true">${mark}</div><ul class="topics">${topics.map(t => `<li>${t}</li>`).join("")}</ul></div>
     <div class="format-grid"><article class="panel"><h2>Карточки</h2><p>Отвечайте по одному и сразу проверяйте результат.</p>${link(url + "/quiz", "Открыть карточки ↗︎")}</article>
-    <article class="panel"><h2>Пробник</h2><p>Решите демонстрационный вариант и узнайте балл.</p>${link(url + "/test", "Открыть пробник ↗︎")}</article></div>
+    <article class="panel"><h2>Пробник</h2><p>${exam === "oge" && subject === "math" ? "25 заданий учебного варианта. Общая проверка после сдачи." : "Решите демонстрационный вариант и узнайте балл."}</p>${link(url + "/test", "Открыть пробник ↗︎")}</article></div>
     ${exam === "ege" && subject === "history" ? '<p><a href="https://paveltupikin.github.io/historia/">Открыть тренажёр Historia ↗︎</a></p>' : ""}`);
 }
 
@@ -132,23 +132,51 @@ function training() {
   if (need("student")) return;
   const quiz = mode === "quiz";
   const assignment = params.has("assignment") ? Number(params.get("assignment")) : undefined;
+  const math = exam === "oge" && subject === "math";
+  let shared = null;
   const show = html => {
     main.innerHTML = section(`<a class="back" href="${assignment ? "/account" : `/${exam}/${subject}`}">←︎ Назад</a>` +
       title(course(exam, subject), quiz ? "Карточки" : "Пробник") + html, true);
   };
+  const rememberContext = attempt => {
+    const panel = main.querySelector(".question-context");
+    const context = attempt.questions[0].context;
+    if (panel && context) shared = {id: context.id, open: panel.open};
+  };
   const start = async () => {
     const attempt = await api("/start", {exam, subject, mode, assignment});
     if (attempt.result) return done(attempt.result);
-    show(`<form class="panel" id="attempt">${attempt.deadline ? '<p class="timer" role="timer"></p>' : ""}
-      ${attempt.questions.map(([topic, question], i) => `<div class="question"><p class="eyebrow">${i + 1} / ${safe(topic)}</p>
-      <label>${safe(question)}<input name="q${i}" placeholder="Ваш ответ" maxlength="240" autocomplete="off" ${quiz ? "required" : ""}></label></div>`).join("")}
-      ${button(quiz ? "Проверить ответ" : "Сдать пробник")}${notice}</form>`);
+    const skip = math && quiz && !assignment;
+    show(`<form class="panel" id="attempt">
+      ${attempt.title ? `<h2>${safe(attempt.title)}</h2>${questionUI.writtenNotice}` : ""}
+      ${attempt.deadline ? '<p class="timer" role="timer"></p>' : ""}
+      ${questionUI.fields(attempt.questions, quiz, shared)}
+      <div class="actions">${button(quiz ? "Проверить ответ" : "Сдать пробник")}
+      ${skip ? '<button type="button" class="button outline" id="skip-card">Пропустить</button>' : ""}</div>${notice}</form>`);
     let clock;
     const attemptForm = form("attempt", async fields => {
+      rememberContext(attempt);
       const result = await api("/finish", {id: attempt.id, answers: attempt.questions.map((_, i) => fields["q" + i] || "")});
       clearInterval(clock);
       done(result);
     });
+    if (skip) {
+      const control = document.querySelector("#skip-card");
+      control.addEventListener("click", async () => {
+        if (attemptForm.querySelector('[type="submit"]').disabled) return;
+        const submit = attemptForm.querySelector('[type="submit"]');
+        submit.disabled = control.disabled = true;
+        try {
+          rememberContext(attempt);
+          await api("/skip", {id: attempt.id});
+          await start();
+        } catch (error) {
+          attemptForm.querySelector(".notice").textContent = error.message;
+        } finally {
+          submit.disabled = control.disabled = false;
+        }
+      });
+    }
     if (attempt.deadline) {
       const tick = () => {
         const seconds = Math.max(0, attempt.deadline - Math.floor(Date.now() / 1000));
@@ -161,11 +189,12 @@ function training() {
   };
   function done(result) {
     show(`<section class="panel stack"><h2>${result.expired ? "Время вышло" : `Верно: ${result.correct} из ${result.total}`}</h2>
-      ${result.details.map(([q, a, correct]) => `<div class="question"><p>${safe(q)}</p><strong>${correct ? "Верно" : "Правильный ответ"} · ${safe(a)}</strong></div>`).join("")}
+      ${result.details.some(detail => detail[2] === null) ? "<p>Счёт относится к заданиям с коротким ответом. Развёрнутые решения сверьте с разбором ниже.</p>" : ""}
+      ${questionUI.results(result.details, quiz)}
       ${quiz ? `<form id="next">${button("Следующая карточка ↗︎")}${notice}</form>` : ""}</section>`);
     if (quiz) form("next", start);
   }
-  show(`<form class="panel" id="start"><p>${quiz ? "Карточки повторяются после прохождения демонстрационного набора." : "Если учитель ограничил время, таймер запустится при начале."}</p>${button("Начать ↗︎")}${notice}</form>`);
+  show(`<form class="panel" id="start"><p>${quiz ? (math ? "В заданиях № 1–5 используется общая схема. После ответа откроется разбор." : "Карточки повторяются после прохождения демонстрационного набора.") : "Если учитель ограничил время, таймер запустится при начале."}</p>${button("Начать ↗︎")}${notice}</form>`);
   form("start", start);
 }
 
