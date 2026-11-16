@@ -2,6 +2,7 @@
 
 import argparse
 from contextlib import closing
+from decimal import Decimal
 from getpass import getpass
 import hashlib
 from http.cookies import SimpleCookie
@@ -16,6 +17,7 @@ import time
 from urllib.parse import urlsplit
 
 from content import BANK, EXAMS, SUBJECTS
+import question_bank
 from workbook import xlsx
 
 ROOT = Path(__file__).resolve().parent
@@ -46,6 +48,7 @@ class Error(ValueError):
 def connect():
     db = sqlite3.connect(DB, timeout=10)
     db.row_factory = sqlite3.Row
+    db.execute("PRAGMA foreign_keys = ON")
     return db
 
 
@@ -108,6 +111,26 @@ def normalize(value):
     return " ".join(value.casefold().replace("ё", "е").replace(",", ".").split())
 
 
+def matches(task, answer):
+    expected = task["answer"]
+    if task["kind"] == "number":
+        value = answer.strip().replace("−", "-").replace(",", ".")
+        value = re.sub(r"(?<=\d)[ \u00a0\u202f](?=\d)", "", value)
+        return bool(re.fullmatch(r"[+-]?(?:[0-9]+(?:\.[0-9]+)?|\.[0-9]+)", value)) and (
+            Decimal(value) == Decimal(expected.replace("−", "-").replace(",", "."))
+        )
+    if task["kind"] in {"sequence", "choice"}:
+        return answer.strip() == expected
+    return normalize(answer) == normalize(expected)
+
+
+def as_task(question):
+    if isinstance(question, dict):
+        return question
+    topic, prompt, answer = question
+    return {"topic": topic, "prompt": prompt, "answer": answer, "kind": "text"}
+
+
 def assignments(db, uid):
     return rows(db, """
       SELECT a.id,a.title,a.exam,a.subject,a.mode,a.target,a.minutes,g.name AS group_name,
@@ -122,7 +145,7 @@ def attempt_start(db, data, uid):
     exam, subject, mode = course(data)
     aid = data.get("assignment")
     db.execute("BEGIN IMMEDIATE")
-    bank = BANK[exam, subject]
+    bank = question_bank.questions(db, exam, subject, mode) or BANK[exam, subject]
     deadline = None
     if aid is not None:
         aid = number(data, "assignment", 1, 2**31 - 1)
@@ -148,10 +171,13 @@ def attempt_start(db, data, uid):
             count = row(db, "SELECT COUNT(*) FROM attempt WHERE uid=? AND exam=? AND subject=? AND mode='quiz' AND aid IS ?",
                         uid, exam, subject, aid)[0]
             questions = [bank[count % len(bank)]]
+        questions = [as_task(question) for question in questions]
         attempt_id = secrets.token_urlsafe(18)
         db.execute("INSERT INTO attempt(id,uid,aid,exam,subject,mode,questions,deadline) VALUES(?,?,?,?,?,?,?,?)",
                    (attempt_id, uid, aid, exam, subject, mode, json.dumps(questions), deadline))
-    return {"id": attempt_id, "deadline": deadline, "questions": [[q[0], q[1]] for q in questions]}
+    public = [question_bank.public_question(as_task(question)) for question in questions]
+    test_title = question_bank.test_title(db, exam, subject) if mode == "test" and public[0].get("number") else ""
+    return {"id": attempt_id, "deadline": deadline, "questions": public, "title": test_title}
 
 
 def attempt_finish(db, data, uid):
@@ -160,19 +186,43 @@ def attempt_finish(db, data, uid):
     if not attempt:
         raise Error("Попытка не найдена.", 404)
     if attempt["result"]:
-        return json.loads(attempt["result"])
-    questions = json.loads(attempt["questions"])
+        result = json.loads(attempt["result"])
+        if result.get("skipped"):
+            raise Error("Карточка уже пропущена.", 409)
+        return result
+    questions = [as_task(question) for question in json.loads(attempt["questions"])]
     answers = data.get("answers")
     if not isinstance(answers, list) or len(answers) != len(questions) or any(
-        not isinstance(answer, str) or len(answer) > 240 for answer in answers
+        not isinstance(answer, str) or len(answer) > (4000 if question["kind"] == "written" else 240)
+        for question, answer in zip(questions, answers)
     ):
         raise Error("Проверьте ответы.")
     expired = attempt["deadline"] is not None and int(time.time()) >= attempt["deadline"]
-    details = [[q[1], q[2], not expired and normalize(q[2]) == normalize(a)] for q, a in zip(questions, answers)]
-    result = {"expired": expired, "details": details, "correct": sum(q[2] for q in details), "total": len(details)}
+    details = []
+    for question, answer in zip(questions, answers):
+        written = question["kind"] == "written"
+        correct = None if written else not expired and matches(question, answer)
+        details.append([question["prompt"], question["answer"], correct,
+                        question.get("solution"), answer if written else None])
+    graded = [detail for detail in details if detail[2] is not None]
+    result = {"expired": expired, "details": details,
+              "correct": sum(detail[2] for detail in graded), "total": len(graded)}
     db.execute("UPDATE attempt SET result=?,correct=?,total=? WHERE id=?",
                (json.dumps(result), result["correct"], result["total"], attempt["id"]))
     return result
+
+
+def attempt_skip(db, data, uid):
+    db.execute("BEGIN IMMEDIATE")
+    attempt = row(db, "SELECT * FROM attempt WHERE id=? AND uid=?", string(data, "id"), uid)
+    if not attempt or attempt["mode"] != "quiz" or attempt["aid"] is not None:
+        raise Error("Эту карточку нельзя пропустить.", 404)
+    if attempt["result"]:
+        if json.loads(attempt["result"]).get("skipped"):
+            return {}
+        raise Error("На карточку уже ответили.", 409)
+    db.execute("UPDATE attempt SET result=? WHERE id=?", (json.dumps({"skipped": True}), attempt["id"]))
+    return {}
 
 
 def student_api(db, method, path, data, uid):
@@ -180,7 +230,7 @@ def student_api(db, method, path, data, uid):
         progress = rows(db, """
           SELECT exam,subject,SUM(total) AS answered,SUM(correct) AS correct,
             COUNT(CASE WHEN mode='test' THEN 1 END) AS tests
-          FROM attempt WHERE uid=? AND result IS NOT NULL GROUP BY exam,subject
+          FROM attempt WHERE uid=? AND total IS NOT NULL GROUP BY exam,subject
         """, uid)
         return {"progress": progress, "assignments": assignments(db, uid)}
     if (method, path) == ("POST", "/join"):
@@ -191,6 +241,8 @@ def student_api(db, method, path, data, uid):
         return {"name": group["name"]}
     if (method, path) == ("POST", "/start"):
         return attempt_start(db, data, uid)
+    if (method, path) == ("POST", "/skip"):
+        return attempt_skip(db, data, uid)
     if (method, path) == ("POST", "/finish"):
         return attempt_finish(db, data, uid)
     raise Error("Действие недоступно для ученика.", 403)
@@ -252,7 +304,10 @@ def teacher_api(db, method, path, data, uid):
             if not isinstance(items, list) or len(items) > 30 or any(not isinstance(i, dict) for i in items):
                 raise Error("Добавьте до 30 вопросов.")
             questions = [["Вопрос учителя", string(i, "text", 2, 600), string(i, "answer", 1, 240)] for i in items]
-            target = len(questions or BANK[exam, subject])
+            target = len(questions) if questions else sum(
+                as_task(question)["kind"] != "written"
+                for question in (question_bank.questions(db, exam, subject, "test") or BANK[exam, subject])
+            )
         db.execute("INSERT INTO assignment(gid,uid,title,exam,subject,mode,target,minutes,questions) VALUES(?,?,?,?,?,?,?,?,?)",
                    (gid, student, string(data, "title", 2), exam, subject, mode, target, minutes, json.dumps(questions)))
         return {}, {}
@@ -313,6 +368,11 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if method == "GET" and path in assets:
                 return self.reply((ROOT / path[1:]).read_bytes(), assets[path])
+            if method == "GET" and re.fullmatch(r"/assets/(question-ui\.js|question-ui\.css|y27-[a-z]+(?:-[a-z]+)?\.svg)", path):
+                asset = ROOT / "docs" / path[1:]
+                types = {".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml"}
+                if asset.is_file():
+                    return self.reply(asset.read_bytes(), types[asset.suffix])
             if method == "GET" and path == "/progress":
                 return self.reply(b"", "text/html", status=302, headers={"Location": "/account"})
             if method == "GET" and (path in {"/", "/account", "/teacher"} or re.fullmatch(
@@ -336,7 +396,7 @@ class Handler(BaseHTTPRequestHandler):
             raise Error("Ожидается JSON.", 415)
         try:
             size = int(self.headers.get("Content-Length", "0"))
-            if not 0 < size <= 64_000:
+            if not 0 < size <= 128_000:
                 raise ValueError
             data = json.loads(self.rfile.read(size))
         except ValueError:
@@ -368,6 +428,7 @@ def main():
     args = parser.parse_args()
     with closing(connect()) as db, db:
         db.executescript(SCHEMA)
+        question_bank.install(db, question_bank.load_seed())
         if args.teacher:
             login, name = args.teacher
             try:

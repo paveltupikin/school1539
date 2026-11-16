@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 152 168" role="img">
+<rect width="152" height="168" fill="#fffef8"/>
+<g transform="translate(3 0)">
+<g stroke="#c6c4ba" stroke-width="1">
+<path d="M8 16V160"/>
+<path d="M24 16V160"/>
+<path d="M40 16V160"/>
+<path d="M56 16V160"/>
+<path d="M72 16V160"/>
+<path d="M88 16V160"/>
+<path d="M104 16V160"/>
+<path d="M120 16V160"/>
+<path d="M136 16V160"/>
+<path d="M0 24H144"/>
+<path d="M0 40H144"/>
+<path d="M0 56H144"/>
+<path d="M0 72H144"/>
+<path d="M0 88H144"/>
+<path d="M0 104H144"/>
+<path d="M0 120H144"/>
+<path d="M0 136H144"/>
+<path d="M0 152H144"/>
+</g>
+<path d="M0 88H144M72 16V160" stroke="#161717" stroke-width="1.5"/>
+<g fill="#161717" font-family="Arial, sans-serif" font-size="13">
+<text x="3" y="13">А</text><text x="78" y="16">y</text><text x="135" y="82">x</text>
+<text x="59" y="102">0</text><text x="84" y="102">1</text><text x="59" y="70">1</text></g>
+<path d="M48 16 96 160" fill="none" stroke="#2542f5" stroke-width="2.5"/></g>
+</svg>

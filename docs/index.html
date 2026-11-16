@@ -175,6 +175,9 @@
 
 .subject-banner .subject-title {min-width:0} .section-head span {font-weight:900;color:var(--blue)}
 </style>
+<link rel="stylesheet" href="./assets/question-ui.css">
+<script src="./assets/question-ui.js"></script>
+<script src="./assets/math-bank.js"></script>
 </head>
 <body>
 <a class="skip" href="#main">К содержанию</a>
@@ -353,20 +356,22 @@ const escapeHTML = value => String(value).replace(/[&<>"']/g, c => ({
 const button = (href, label, theme = "") => `<a class="button ${theme}" href="${href}">${label}</a>`;
 const layout = (content, narrow = false) => `<div class="wrap section ${narrow ? "narrow" : ""}">${content}</div>`;
 const title = (kicker, heading) => `<div class="intro"><p class="eyebrow">${kicker}</p><h1>${heading}</h1></div>`;
-const normalize = value => value.trim().toLowerCase().replaceAll("ё", "е").replaceAll(",", ".").replace(/\s+/g, " ");
 
 function stat(key) {
   const row = progress[key] || {};
   const count = name => Number.isSafeInteger(row[name]) && row[name] >= 0 ? row[name] : 0;
-  return {answered: count("answered"), correct: count("correct"), cards: count("cards"), tests: count("tests")};
+  return {answered: count("answered"), correct: count("correct"), cards: count("cards"),
+    tests: count("tests"), turn: Number.isSafeInteger(row.turn) && row.turn >= 0 ? row.turn : count("cards")};
 }
 
 function record(key, mode, correct, total) {
   const current = stat(key);
   current.answered += total;
   current.correct += correct;
-  if (mode === "quiz") current.cards += 1;
-  else current.tests += 1;
+  if (mode === "quiz") {
+    current.turn += 1;
+    if (total) current.cards += 1;
+  } else current.tests += 1;
   progress[key] = current;
   try {
     localStorage.setItem(storageKey, JSON.stringify(progress));
@@ -405,40 +410,58 @@ function subjectPage(exam, id) {
     <h1>${name}</h1><p>${note}</p></div><div class="mark" aria-hidden="true">${mark}</div></section>
     <div class="format-grid">
       <article class="panel"><h2>Карточки</h2><p>Проверка после каждого ответа. Вопросы повторяются по кругу.</p>${button(base + "/quiz", "Открыть карточки ↗︎")}</article>
-      <article class="panel"><h2>Мини-пробник</h2><p>Три задания с общей проверкой в конце.</p>${button(base + "/test", "Открыть пробник ↗︎")}</article>
+      <article class="panel"><h2>${exam === "oge" && id === "math" ? "Пробник" : "Мини-пробник"}</h2><p>${exam === "oge" && id === "math"
+        ? "25 заданий учебного варианта. Общая проверка после сдачи." : "Три задания с общей проверкой в конце."}</p>${button(base + "/test", "Открыть пробник ↗︎")}</article>
     </div>`);
 }
 
-function training(exam, id, mode) {
+function training(exam, id, mode, previousContext = null) {
   const key = exam + "/" + id;
   const quiz = mode === "quiz";
-  const bank = BANK[key];
-  const questions = quiz ? [bank[stat(key).cards % bank.length]] : bank;
+  const math = key === "oge/math";
+  const bank = math ? window.ogeMathBank[quiz ? "cards" : "test"]
+    : BANK[key].map(([topic, prompt, answer]) => ({topic, prompt, answer, kind: "text"}));
+  const questions = quiz ? [bank[stat(key).turn % bank.length]] : bank;
+  const heading = quiz ? "Карточки" : math ? "Пробник" : "Мини-пробник";
   const render = content => {
     main.innerHTML = layout(`<a class="back" href="#/${key}">←︎ ${subjects[id][0]}</a>`
-      + title(`${exams[exam]} / ${subjects[id][0]}`, quiz ? "Карточка" : "Мини-пробник") + content, true);
+      + title(`${exams[exam]} / ${subjects[id][0]}`, heading) + content, true);
   };
   render(`<form class="panel" id="answers">
-    ${questions.map(([topic, question], i) => `<div class="question"><p class="eyebrow">${i + 1} / ${escapeHTML(topic)}</p>
-    <label>${escapeHTML(question)}<input name="q${i}" maxlength="240" autocomplete="off" placeholder="Ваш ответ" ${quiz ? "required" : ""}></label></div>`).join("")}
-    <button class="button" type="submit">${quiz ? "Проверить ответ" : "Сдать пробник"}</button>
+    ${math && !quiz ? `<h2>${escapeHTML(window.ogeMathBank.title)}</h2>${questionUI.writtenNotice}` : ""}
+    ${questionUI.fields(questions, quiz, previousContext)}
+    <div class="actions"><button class="button" type="submit">${quiz ? "Проверить ответ" : "Сдать пробник"}</button>
+    ${quiz && math ? '<button class="button outline" type="button" id="skip-card">Пропустить</button>' : ""}</div>
   </form>`);
+  const contextState = () => {
+    const panel = main.querySelector(".question-context");
+    return panel ? {id: questions[0].context.id, open: panel.open} : null;
+  };
+  document.querySelector("#skip-card")?.addEventListener("click", () => {
+    record(key, mode, 0, 0);
+    training(exam, id, mode, contextState());
+    main.focus();
+  });
   document.querySelector("#answers").addEventListener("submit", event => {
     event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    const results = questions.map(([, question, answer], i) => {
-      const correct = normalize(form.get("q" + i) || "") === normalize(answer);
-      return {question, answer, correct};
+    const fields = new FormData(event.currentTarget);
+    const details = questions.map((task, i) => {
+      const response = fields.get("q" + i) || "";
+      const written = task.kind === "written";
+      return [task.prompt, task.answer, written ? null : questionUI.matches(task, response),
+        task.solution, written ? response : null];
     });
-    const correct = results.filter(result => result.correct).length;
-    record(key, mode, correct, results.length);
-    render(`<section class="panel stack"><h2 id="result" tabindex="-1">Верно: ${correct} из ${results.length}</h2>
-      ${results.map(result => `<div class="question"><p>${escapeHTML(result.question)}</p>
-      <strong>${result.correct ? "Верно" : "Правильный ответ"} · ${escapeHTML(result.answer)}</strong></div>`).join("")}
+    const graded = details.filter(detail => detail[2] !== null);
+    const correct = graded.filter(detail => detail[2]).length;
+    const shared = contextState();
+    record(key, mode, correct, graded.length);
+    render(`<section class="panel stack"><h2 id="result" tabindex="-1">Верно: ${correct} из ${graded.length}</h2>
+      ${math && !quiz ? "<p>Счёт относится к заданиям с коротким ответом. Развёрнутые решения сверьте с разбором ниже.</p>" : ""}
+      ${questionUI.results(details, quiz)}
       <div class="actions"><button class="button" id="again">${quiz ? "Следующая карточка ↗︎" : "Повторить пробник ↗︎"}</button></div></section>`);
     document.querySelector("#result").focus();
     document.querySelector("#again").addEventListener("click", () => {
-      training(exam, id, mode);
+      training(exam, id, mode, shared);
       main.focus();
     });
   }, {once: true});
