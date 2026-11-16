@@ -313,7 +313,9 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if method == "GET" and path in assets:
                 return self.reply((ROOT / path[1:]).read_bytes(), assets[path])
-            if method == "GET" and (path in {"/", "/account", "/progress", "/teacher"} or re.fullmatch(
+            if method == "GET" and path == "/progress":
+                return self.reply(b"", "text/html", status=302, headers={"Location": "/account"})
+            if method == "GET" and (path in {"/", "/account", "/teacher"} or re.fullmatch(
                 r"/(oge|ege)(/(math|russ|history|social)(/(quiz|test))?)?", path
             )):
                 return self.reply((ROOT / "index.html").read_bytes(), "text/html")
