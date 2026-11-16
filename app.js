@@ -90,7 +90,9 @@ function subjectPage() {
     <div class="subject-banner ${subject}"><div class="subject-title"><p class="eyebrow">${exams[exam]} / ПОДГОТОВКА</p><h1>${name}</h1><p>${desc}</p></div>
     <div class="mark" aria-hidden="true">${mark}</div><ul class="topics">${topics.map(t => `<li>${t}</li>`).join("")}</ul></div>
     <div class="format-grid"><article class="panel"><h2>Карточки</h2><p>Отвечайте по одному и сразу проверяйте результат.</p>${link(url + "/quiz", "Открыть карточки ↗︎")}</article>
-    <article class="panel"><h2>Пробник</h2><p>${exam === "oge" && subject === "math" ? "25 заданий учебного варианта. Общая проверка после сдачи." : "Решите демонстрационный вариант и узнайте балл."}</p>${link(url + "/test", "Открыть пробник ↗︎")}</article></div>
+    <article class="panel"><h2>Пробник</h2><p>${exam === "oge" && subject === "math" ? "25 заданий учебного варианта. Общая проверка после сдачи." : "Решите демонстрационный вариант и узнайте балл."}</p>${link(url + "/test", "Открыть пробник ↗︎")}</article>
+    ${exam === "oge" && subject === "math" ? `<article class="panel"><h2>Лента заданий</h2>
+      <p>Найдите задание по ID, указанному рядом с условием.</p>${link(url + "/tasks", "Открыть ленту ↗︎")}</article>` : ""}</div>
     ${exam === "ege" && subject === "history" ? '<p><a href="https://paveltupikin.github.io/historia/">Открыть тренажёр Historia ↗︎</a></p>' : ""}`);
 }
 
@@ -128,6 +130,13 @@ function need(role) {
   return true;
 }
 
+async function taskFeed() {
+  const {tasks} = await api("/oge/math/tasks");
+  main.innerHTML = section('<a class="back" href="/oge/math">←︎ Математика</a>' +
+    title("ОГЭ / Математика", "Лента заданий") + '<section class="panel" id="task-feed"></section>', true);
+  questionUI.mountFeed(document.querySelector("#task-feed"), tasks, params.get("id"));
+}
+
 function training() {
   if (need("student")) return;
   const quiz = mode === "quiz";
@@ -148,7 +157,7 @@ function training() {
     if (attempt.result) return done(attempt.result);
     const skip = math && quiz && !assignment;
     show(`<form class="panel" id="attempt">
-      ${attempt.title ? `<h2>${safe(attempt.title)}</h2>${questionUI.writtenNotice}` : ""}
+      ${attempt.questions.some(task => task.kind === "written") ? questionUI.writtenNotice : ""}
       ${attempt.deadline ? '<p class="timer" role="timer"></p>' : ""}
       ${questionUI.fields(attempt.questions, quiz, shared)}
       <div class="actions">${button(quiz ? "Проверить ответ" : "Сдать пробник")}
@@ -188,10 +197,12 @@ function training() {
     }
   };
   function done(result) {
-    show(`<section class="panel stack"><h2>${result.expired ? "Время вышло" : `Верно: ${result.correct} из ${result.total}`}</h2>
+    show(`<section class="panel stack"><h2 id="result" tabindex="-1">${result.expired ? "Время вышло" : `Верно: ${result.correct} из ${result.total}`}</h2>
       ${result.details.some(detail => detail[2] === null) ? "<p>Счёт относится к заданиям с коротким ответом. Развёрнутые решения сверьте с разбором ниже.</p>" : ""}
-      ${questionUI.results(result.details, quiz)}
+      ${questionUI.sourceLine(result.source)}
+      ${questionUI.results(result.questions, result.details, math ? "/oge/math/tasks" : "")}
       ${quiz ? `<form id="next">${button("Следующая карточка ↗︎")}${notice}</form>` : ""}</section>`);
+    document.querySelector("#result").focus();
     if (quiz) form("next", start);
   }
   show(`<form class="panel" id="start"><p>${quiz ? (math ? "В заданиях № 1–5 используется общая схема. После ответа откроется разбор." : "Карточки повторяются после прохождения демонстрационного набора.") : "Если учитель ограничил время, таймер запустится при начале."}</p>${button("Начать ↗︎")}${notice}</form>`);
@@ -268,6 +279,7 @@ async function boot() {
   navigation();
   if (exam === "account") return account();
   if (exam === "teacher") return teacher();
+  if (exam === "oge" && subject === "math" && mode === "tasks") return taskFeed();
   if (mode) return training();
   if (subject) return subjectPage();
   home();

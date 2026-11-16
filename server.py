@@ -141,6 +141,18 @@ def assignments(db, uid):
     """, uid)
 
 
+def saved_questions(db, serialized):
+    return question_bank.snapshot_questions(db, [as_task(question) for question in json.loads(serialized)])
+
+
+def result_payload(result, questions, mode):
+    payload = dict(result, questions=[question_bank.public_question(q) for q in questions])
+    if mode == "test":
+        sources = {question["source_label"] for question in questions if question.get("source_label")}
+        payload["source"] = " · ".join(sorted(sources))
+    return payload
+
+
 def attempt_start(db, data, uid):
     exam, subject, mode = course(data)
     aid = data.get("assignment")
@@ -162,9 +174,10 @@ def attempt_start(db, data, uid):
       AND (result IS NULL OR (mode='test' AND aid IS NOT NULL)) ORDER BY rowid DESC LIMIT 1
     """, uid, exam, subject, mode, aid)
     if saved:
+        questions = saved_questions(db, saved["questions"])
         if saved["result"]:
-            return {"result": json.loads(saved["result"])}
-        attempt_id, deadline, questions = saved["id"], saved["deadline"], json.loads(saved["questions"])
+            return {"result": result_payload(json.loads(saved["result"]), questions, mode)}
+        attempt_id, deadline = saved["id"], saved["deadline"]
     else:
         questions = bank
         if mode == "quiz":
@@ -175,9 +188,8 @@ def attempt_start(db, data, uid):
         attempt_id = secrets.token_urlsafe(18)
         db.execute("INSERT INTO attempt(id,uid,aid,exam,subject,mode,questions,deadline) VALUES(?,?,?,?,?,?,?,?)",
                    (attempt_id, uid, aid, exam, subject, mode, json.dumps(questions), deadline))
-    public = [question_bank.public_question(as_task(question)) for question in questions]
-    test_title = question_bank.test_title(db, exam, subject) if mode == "test" and public[0].get("number") else ""
-    return {"id": attempt_id, "deadline": deadline, "questions": public, "title": test_title}
+    return {"id": attempt_id, "deadline": deadline,
+            "questions": [question_bank.public_question(question) for question in questions]}
 
 
 def attempt_finish(db, data, uid):
@@ -185,12 +197,12 @@ def attempt_finish(db, data, uid):
     attempt = row(db, "SELECT * FROM attempt WHERE id=? AND uid=?", string(data, "id"), uid)
     if not attempt:
         raise Error("Попытка не найдена.", 404)
+    questions = saved_questions(db, attempt["questions"])
     if attempt["result"]:
         result = json.loads(attempt["result"])
         if result.get("skipped"):
             raise Error("Карточка уже пропущена.", 409)
-        return result
-    questions = [as_task(question) for question in json.loads(attempt["questions"])]
+        return result_payload(result, questions, attempt["mode"])
     answers = data.get("answers")
     if not isinstance(answers, list) or len(answers) != len(questions) or any(
         not isinstance(answer, str) or len(answer) > (4000 if question["kind"] == "written" else 240)
@@ -203,13 +215,13 @@ def attempt_finish(db, data, uid):
         written = question["kind"] == "written"
         correct = None if written else not expired and matches(question, answer)
         details.append([question["prompt"], question["answer"], correct,
-                        question.get("solution"), answer if written else None])
+                        question.get("solution"), answer])
     graded = [detail for detail in details if detail[2] is not None]
     result = {"expired": expired, "details": details,
               "correct": sum(detail[2] for detail in graded), "total": len(graded)}
     db.execute("UPDATE attempt SET result=?,correct=?,total=? WHERE id=?",
                (json.dumps(result), result["correct"], result["total"], attempt["id"]))
-    return result
+    return result_payload(result, questions, attempt["mode"])
 
 
 def attempt_skip(db, data, uid):
@@ -330,6 +342,8 @@ def api(db, method, path, data, token):
     user = public_user(db, found["uid"]) if found else None
     if (method, path) == ("GET", "/me"):
         return {"user": user}, {}
+    if (method, path) == ("GET", "/oge/math/tasks"):
+        return {"tasks": question_bank.task_feed(db, "oge", "math")}, {}
     if method == "POST" and path in {"/login", "/register"}:
         if path == "/register":
             uid = user_create(db, data, "student")
@@ -375,7 +389,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self.reply(asset.read_bytes(), types[asset.suffix])
             if method == "GET" and path == "/progress":
                 return self.reply(b"", "text/html", status=302, headers={"Location": "/account"})
-            if method == "GET" and (path in {"/", "/account", "/teacher"} or re.fullmatch(
+            if method == "GET" and (path in {"/", "/account", "/teacher", "/oge/math/tasks"} or re.fullmatch(
                 r"/(oge|ege)(/(math|russ|history|social)(/(quiz|test))?)?", path
             )):
                 return self.reply((ROOT / "index.html").read_bytes(), "text/html")

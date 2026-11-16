@@ -412,7 +412,15 @@ function subjectPage(exam, id) {
       <article class="panel"><h2>Карточки</h2><p>Проверка после каждого ответа. Вопросы повторяются по кругу.</p>${button(base + "/quiz", "Открыть карточки ↗︎")}</article>
       <article class="panel"><h2>${exam === "oge" && id === "math" ? "Пробник" : "Мини-пробник"}</h2><p>${exam === "oge" && id === "math"
         ? "25 заданий учебного варианта. Общая проверка после сдачи." : "Три задания с общей проверкой в конце."}</p>${button(base + "/test", "Открыть пробник ↗︎")}</article>
+      ${exam === "oge" && id === "math" ? `<article class="panel"><h2>Лента заданий</h2>
+        <p>Найдите задание по ID, указанному рядом с условием.</p>${button(base + "/tasks", "Открыть ленту ↗︎")}</article>` : ""}
     </div>`);
+}
+
+function taskFeed(params) {
+  main.innerHTML = layout('<a class="back" href="#/oge/math">←︎ Математика</a>' +
+    title("ОГЭ / Математика", "Лента заданий") + '<section class="panel" id="task-feed"></section>', true);
+  questionUI.mountFeed(document.querySelector("#task-feed"), window.ogeMathBank.feed, params.get("id"));
 }
 
 function training(exam, id, mode, previousContext = null) {
@@ -428,7 +436,7 @@ function training(exam, id, mode, previousContext = null) {
       + title(`${exams[exam]} / ${subjects[id][0]}`, heading) + content, true);
   };
   render(`<form class="panel" id="answers">
-    ${math && !quiz ? `<h2>${escapeHTML(window.ogeMathBank.title)}</h2>${questionUI.writtenNotice}` : ""}
+    ${math && !quiz ? questionUI.writtenNotice : ""}
     ${questionUI.fields(questions, quiz, previousContext)}
     <div class="actions"><button class="button" type="submit">${quiz ? "Проверить ответ" : "Сдать пробник"}</button>
     ${quiz && math ? '<button class="button outline" type="button" id="skip-card">Пропустить</button>' : ""}</div>
@@ -449,15 +457,17 @@ function training(exam, id, mode, previousContext = null) {
       const response = fields.get("q" + i) || "";
       const written = task.kind === "written";
       return [task.prompt, task.answer, written ? null : questionUI.matches(task, response),
-        task.solution, written ? response : null];
+        task.solution, response];
     });
     const graded = details.filter(detail => detail[2] !== null);
     const correct = graded.filter(detail => detail[2]).length;
     const shared = contextState();
+    const source = quiz ? "" : [...new Set(questions.map(task => task.source_label).filter(Boolean))].sort().join(" · ");
     record(key, mode, correct, graded.length);
     render(`<section class="panel stack"><h2 id="result" tabindex="-1">Верно: ${correct} из ${graded.length}</h2>
       ${math && !quiz ? "<p>Счёт относится к заданиям с коротким ответом. Развёрнутые решения сверьте с разбором ниже.</p>" : ""}
-      ${questionUI.results(details, quiz)}
+      ${questionUI.sourceLine(source)}
+      ${questionUI.results(questions, details, math ? "#/oge/math/tasks" : "")}
       <div class="actions"><button class="button" id="again">${quiz ? "Следующая карточка ↗︎" : "Повторить пробник ↗︎"}</button></div></section>`);
     document.querySelector("#result").focus();
     document.querySelector("#again").addEventListener("click", () => {
@@ -476,7 +486,8 @@ function account() {
 function route() {
   if (location.hash === "#main") return;
   if (location.hash === "#/progress") history.replaceState(null, "", location.pathname + location.search);
-  const parts = location.hash.slice(1).split("/").filter(Boolean);
+  const [path, search] = location.hash.slice(1).split("?", 2);
+  const parts = path.split("/").filter(Boolean);
   const [exam, id, mode] = parts;
   document.querySelector("#header").classList.toggle("hero-header", !parts.length ||
     (parts.length === 1 && Object.hasOwn(exams, exam)));
@@ -488,6 +499,7 @@ function route() {
   else if (!parts.length) catalog();
   else if (Object.hasOwn(exams, exam) && parts.length === 1) catalog(exam);
   else if (Object.hasOwn(BANK, exam + "/" + id) && parts.length === 2) subjectPage(exam, id);
+  else if (exam === "oge" && id === "math" && mode === "tasks" && parts.length === 3) taskFeed(new URLSearchParams(search));
   else if (Object.hasOwn(BANK, exam + "/" + id) && parts.length === 3 && ["quiz", "test"].includes(mode)) training(exam, id, mode);
   else main.innerHTML = layout(title("ШКОЛА 1539", "Раздел не найден") + button("#", "На главную ↗︎"), true);
 }
