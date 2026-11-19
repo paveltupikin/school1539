@@ -178,6 +178,7 @@
 <link rel="stylesheet" href="./assets/question-ui.css">
 <script src="./assets/question-ui.js"></script>
 <script src="./assets/math-bank.js"></script>
+<script src="./assets/russ-bank.js"></script>
 </head>
 <body>
 <a class="skip" href="#main">К содержанию</a>
@@ -410,36 +411,57 @@ function subjectPage(exam, id) {
     <h1>${name}</h1><p>${note}</p></div><div class="mark" aria-hidden="true">${mark}</div></section>
     <div class="format-grid">
       <article class="panel"><h2>Карточки</h2><p>Проверка после каждого ответа. Вопросы повторяются по кругу.</p>${button(base + "/quiz", "Открыть карточки ↗︎")}</article>
-      <article class="panel"><h2>${exam === "oge" && id === "math" ? "Пробник" : "Мини-пробник"}</h2><p>${exam === "oge" && id === "math"
+      <article class="panel"><h2>${exam === "oge" && ["math", "russ"].includes(id) ? "Пробники" : "Мини-пробник"}</h2><p>${exam === "oge" && id === "russ" ? "100 заданий, 280 карточек и 10 учебных работ. Задания 2–13 без изложения." : exam === "oge" && id === "math"
         ? "25 заданий учебного варианта. Общая проверка после сдачи." : "Три задания с общей проверкой в конце."}</p>${button(base + "/test", "Открыть пробник ↗︎")}</article>
-      ${exam === "oge" && id === "math" ? `<article class="panel"><h2>Лента заданий</h2>
+      ${exam === "oge" && ["math", "russ"].includes(id) ? `<article class="panel"><h2>Лента заданий</h2>
         <p>Найдите задание по ID, указанному рядом с условием.</p>${button(base + "/tasks", "Открыть ленту ↗︎")}</article>` : ""}
     </div>`);
 }
 
-function taskFeed(params) {
-  main.innerHTML = layout('<a class="back" href="#/oge/math">←︎ Математика</a>' +
-    title("ОГЭ / Математика", "Лента заданий") + '<section class="panel" id="task-feed"></section>', true);
-  questionUI.mountFeed(document.querySelector("#task-feed"), window.ogeMathBank.feed, params.get("id"));
+function taskFeed(params, id) {
+  main.innerHTML = layout(`<a class="back" href="#/oge/${id}">←︎ ${subjects[id][0]}</a>` +
+    title(`ОГЭ / ${subjects[id][0]}`, "Лента заданий") + '<section class="panel" id="task-feed"></section>', true);
+  questionUI.mountFeed(document.querySelector("#task-feed"), (id === "russ" ? window.ogeRussianBank : window.ogeMathBank).feed, params.get("id"));
 }
 
 function training(exam, id, mode, previousContext = null) {
   const key = exam + "/" + id;
   const quiz = mode === "quiz";
   const math = key === "oge/math";
-  const bank = math ? window.ogeMathBank[quiz ? "cards" : "test"]
+  const russ = key === "oge/russ";
+  const selected = new URLSearchParams(location.hash.split("?")[1]);
+  const practiceBase = `#/${key}/${mode}`;
+  const historyKey = "pages-oge-russ";
+  let bank = russ ? (quiz ? window.ogeRussianBank.cards :
+    window.ogeRussianBank.tests.find(test => test.id === selected.get("test"))?.questions || window.ogeRussianBank.test)
+    : math ? window.ogeMathBank[quiz ? "cards" : "test"]
     : BANK[key].map(([topic, prompt, answer]) => ({topic, prompt, answer, kind: "text"}));
+  if (russ && quiz) {
+    if (selected.get("topic")) bank = bank.filter(task => task.topic === selected.get("topic"));
+    if (selected.get("id")) bank = bank.filter(task => task.public_id === selected.get("id"));
+    if (selected.get("review") === "1") {
+      const wrong = questionUI.wrongIds(historyKey);
+      bank = bank.filter(task => wrong.includes(task.public_id));
+    }
+  }
   const questions = quiz ? [bank[stat(key).turn % bank.length]] : bank;
-  const heading = quiz ? "Карточки" : math ? "Пробник" : "Мини-пробник";
+  const heading = quiz ? "Карточки" : math || russ ? "Пробник" : "Мини-пробник";
   const render = content => {
     main.innerHTML = layout(`<a class="back" href="#/${key}">←︎ ${subjects[id][0]}</a>`
-      + title(`${exams[exam]} / ${subjects[id][0]}`, heading) + content, true);
+      + title(`${exams[exam]} / ${subjects[id][0]}`, heading)
+      + (russ ? questionUI.studyControls(window.ogeRussianBank, quiz, selected, practiceBase) : "") + content
+      + (russ && quiz ? questionUI.historyHTML(historyKey, "#/oge/russ/quiz") : ""), true);
+    questionUI.bindStudyControls(main);
   };
+  if (!bank.length) {
+    render('<section class="panel"><p>В этой подборке пока нет карточек. Выберите другую тему или вернитесь ко всем карточкам.</p></section>');
+    return;
+  }
   render(`<form class="panel" id="answers">
-    ${math && !quiz ? questionUI.writtenNotice : ""}
+    ${russ ? questionUI.russianNotice : math && !quiz ? questionUI.writtenNotice : ""}
     ${questionUI.fields(questions, quiz, previousContext)}
     <div class="actions"><button class="button" type="submit">${quiz ? "Проверить ответ" : "Сдать пробник"}</button>
-    ${quiz && math ? '<button class="button outline" type="button" id="skip-card">Пропустить</button>' : ""}</div>
+    ${quiz && (math || russ) ? '<button class="button outline" type="button" id="skip-card">Пропустить</button>' : ""}</div>
   </form>`);
   const contextState = () => {
     const panel = main.querySelector(".question-context");
@@ -464,10 +486,11 @@ function training(exam, id, mode, previousContext = null) {
     const shared = contextState();
     const source = quiz ? "" : [...new Set(questions.map(task => task.source_label).filter(Boolean))].sort().join(" · ");
     record(key, mode, correct, graded.length);
-    render(`<section class="panel stack"><h2 id="result" tabindex="-1">Верно: ${correct} из ${graded.length}</h2>
-      ${math && !quiz ? "<p>Счёт относится к заданиям с коротким ответом. Развёрнутые решения сверьте с разбором ниже.</p>" : ""}
+    if (russ && quiz) questionUI.remember(historyKey, questions, details);
+    render(`<section class="panel stack"><h2 id="result" tabindex="-1">${graded.length ? `Верно: ${correct} из ${graded.length}` : "Сохранено для самопроверки"}</h2>
+      ${(math || russ) && !quiz ? "<p>Счёт относится к заданиям с коротким ответом. Развёрнутые решения сверьте с памяткой ниже.</p>" : ""}
       ${questionUI.sourceLine(source)}
-      ${questionUI.results(questions, details, math ? "#/oge/math/tasks" : "")}
+      ${questionUI.results(questions, details, math || russ ? `#/oge/${id}/tasks` : "")}
       <div class="actions"><button class="button" id="again">${quiz ? "Следующая карточка ↗︎" : "Повторить пробник ↗︎"}</button></div></section>`);
     document.querySelector("#result").focus();
     document.querySelector("#again").addEventListener("click", () => {
@@ -499,7 +522,7 @@ function route() {
   else if (!parts.length) catalog();
   else if (Object.hasOwn(exams, exam) && parts.length === 1) catalog(exam);
   else if (Object.hasOwn(BANK, exam + "/" + id) && parts.length === 2) subjectPage(exam, id);
-  else if (exam === "oge" && id === "math" && mode === "tasks" && parts.length === 3) taskFeed(new URLSearchParams(search));
+  else if (exam === "oge" && ["math", "russ"].includes(id) && mode === "tasks" && parts.length === 3) taskFeed(new URLSearchParams(search), id);
   else if (Object.hasOwn(BANK, exam + "/" + id) && parts.length === 3 && ["quiz", "test"].includes(mode)) training(exam, id, mode);
   else main.innerHTML = layout(title("ШКОЛА 1539", "Раздел не найден") + button("#", "На главную ↗︎"), true);
 }
