@@ -52,6 +52,13 @@ def connect():
     return db
 
 
+def initialize(db):
+    db.executescript(SCHEMA)
+    if "scope" not in {column[1] for column in db.execute("PRAGMA table_info(attempt)")}:
+        db.execute("ALTER TABLE attempt ADD COLUMN scope TEXT NOT NULL DEFAULT ''")
+    question_bank.install_all(db)
+
+
 def row(db, query, *args):
     return db.execute(query, args).fetchone()
 
@@ -119,9 +126,25 @@ def matches(task, answer):
         return bool(re.fullmatch(r"[+-]?(?:[0-9]+(?:\.[0-9]+)?|\.[0-9]+)", value)) and (
             Decimal(value) == Decimal(expected.replace("−", "-").replace(",", "."))
         )
+    if task["kind"] == "set":
+        digits = re.sub(r"[\s,;]", "", answer)
+        return bool(re.fullmatch(r"[1-9]+", digits)) and len(set(digits)) == len(digits) and set(digits) == set(expected)
     if task["kind"] in {"sequence", "choice"}:
-        return answer.strip() == expected
-    return normalize(answer) == normalize(expected)
+        return re.sub(r"\s", "", answer) == expected
+    def key(value):
+        result = normalize(value)
+        return re.sub(r"\s", "", result) if task.get("compact_answer") else result
+    return any(key(answer) == key(value) for value in task.get("answers") or [expected])
+
+
+def wrong_cards(db, uid, exam, subject):
+    latest = {}
+    for attempt in db.execute("SELECT questions,result FROM attempt WHERE uid=? AND exam=? AND subject=? AND mode='quiz' AND result IS NOT NULL ORDER BY rowid DESC LIMIT 500", (uid, exam, subject)):
+        result = json.loads(attempt["result"])
+        if result.get("skipped"): continue
+        for task, detail in zip(json.loads(attempt["questions"]), result.get("details", [])):
+            if task.get("public_id"): latest.setdefault(task["public_id"], detail[2])
+    return {key for key, good in latest.items() if good is False}
 
 
 def as_task(question):
@@ -158,6 +181,21 @@ def attempt_start(db, data, uid):
     aid = data.get("assignment")
     db.execute("BEGIN IMMEDIATE")
     bank = question_bank.questions(db, exam, subject, mode) or BANK[exam, subject]
+    scope = ""
+    if exam == "oge" and subject == "russ" and aid is None:
+        selected = {key: data[key] for key in ("test", "topic", "id", "review") if data.get(key)}
+        if any(not isinstance(value, str) for key, value in selected.items() if key != "review"):
+            raise Error("Проверьте выбор тренировки.")
+        if mode == "test" and selected.get("test"):
+            bank = question_bank.questions(db, exam, subject, mode, selected["test"])
+        if mode == "quiz":
+            if selected.get("topic"): bank = [q for q in bank if q["topic"] == selected["topic"]]
+            if selected.get("id"): bank = [q for q in bank if q["public_id"] == selected["id"]]
+            if selected.get("review"):
+                wrong = wrong_cards(db, uid, exam, subject)
+                bank = [q for q in bank if q["public_id"] in wrong]
+        if not bank: raise Error("В этой подборке пока нет карточек или работ. Выберите другую тему.")
+        scope = json.dumps(selected, sort_keys=True) if selected else ""
     deadline = None
     if aid is not None:
         aid = number(data, "assignment", 1, 2**31 - 1)
@@ -171,8 +209,8 @@ def attempt_start(db, data, uid):
             deadline = int(time.time()) + assignment["minutes"] * 60
     saved = row(db, """
       SELECT * FROM attempt WHERE uid=? AND exam=? AND subject=? AND mode=? AND aid IS ?
-      AND (result IS NULL OR (mode='test' AND aid IS NOT NULL)) ORDER BY rowid DESC LIMIT 1
-    """, uid, exam, subject, mode, aid)
+      AND scope=? AND (result IS NULL OR (mode='test' AND aid IS NOT NULL)) ORDER BY rowid DESC LIMIT 1
+    """, uid, exam, subject, mode, aid, scope)
     if saved:
         questions = saved_questions(db, saved["questions"])
         if saved["result"]:
@@ -181,13 +219,13 @@ def attempt_start(db, data, uid):
     else:
         questions = bank
         if mode == "quiz":
-            count = row(db, "SELECT COUNT(*) FROM attempt WHERE uid=? AND exam=? AND subject=? AND mode='quiz' AND aid IS ?",
-                        uid, exam, subject, aid)[0]
+            count = row(db, "SELECT COUNT(*) FROM attempt WHERE uid=? AND exam=? AND subject=? AND mode='quiz' AND aid IS ? AND scope=?",
+                        uid, exam, subject, aid, scope)[0]
             questions = [bank[count % len(bank)]]
         questions = [as_task(question) for question in questions]
         attempt_id = secrets.token_urlsafe(18)
-        db.execute("INSERT INTO attempt(id,uid,aid,exam,subject,mode,questions,deadline) VALUES(?,?,?,?,?,?,?,?)",
-                   (attempt_id, uid, aid, exam, subject, mode, json.dumps(questions), deadline))
+        db.execute("INSERT INTO attempt(id,uid,aid,exam,subject,mode,questions,deadline,scope) VALUES(?,?,?,?,?,?,?,?,?)",
+                   (attempt_id, uid, aid, exam, subject, mode, json.dumps(questions), deadline, scope))
     return {"id": attempt_id, "deadline": deadline,
             "questions": [question_bank.public_question(question) for question in questions]}
 
@@ -342,8 +380,10 @@ def api(db, method, path, data, token):
     user = public_user(db, found["uid"]) if found else None
     if (method, path) == ("GET", "/me"):
         return {"user": user}, {}
-    if (method, path) == ("GET", "/oge/math/tasks"):
-        return {"tasks": question_bank.task_feed(db, "oge", "math")}, {}
+    catalog_route = re.fullmatch(r"/oge/(math|russ)/(tasks|catalog)", path)
+    if method == "GET" and catalog_route:
+        if catalog_route[2] == "catalog": return question_bank.catalog(db, "oge", catalog_route[1]), {}
+        return {"tasks": question_bank.task_feed(db, "oge", catalog_route[1])}, {}
     if method == "POST" and path in {"/login", "/register"}:
         if path == "/register":
             uid = user_create(db, data, "student")
@@ -389,7 +429,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self.reply(asset.read_bytes(), types[asset.suffix])
             if method == "GET" and path == "/progress":
                 return self.reply(b"", "text/html", status=302, headers={"Location": "/account"})
-            if method == "GET" and (path in {"/", "/account", "/teacher", "/oge/math/tasks"} or re.fullmatch(
+            if method == "GET" and (path in {"/", "/account", "/teacher", "/oge/math/tasks", "/oge/russ/tasks"} or re.fullmatch(
                 r"/(oge|ege)(/(math|russ|history|social)(/(quiz|test))?)?", path
             )):
                 return self.reply((ROOT / "index.html").read_bytes(), "text/html")
@@ -441,8 +481,7 @@ def main():
     parser.add_argument("--teacher", nargs=2, metavar=("LOGIN", "NAME"))
     args = parser.parse_args()
     with closing(connect()) as db, db:
-        db.executescript(SCHEMA)
-        question_bank.install(db, question_bank.load_seed())
+        initialize(db)
         if args.teacher:
             login, name = args.teacher
             try:

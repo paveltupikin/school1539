@@ -114,3 +114,15 @@ a.question-id {
 .task-search input {
   max-width: 22rem;
 }
+
+.question-context p,
+.question-prompt { white-space: pre-wrap; }
+.question-context p { line-height: 1.65; }
+.study-controls { display: flex; flex-wrap: wrap; align-items: end; gap: .75rem; margin-bottom: 1rem; }
+.study-controls label { flex: 1 1 18rem; min-width: 0; }
+.study-controls select { width: 100%; min-height: 44px; font: inherit; padding: .6rem; }
+.card-history { margin-top: 1rem; }
+.card-history li { margin-block: .6rem; overflow-wrap: anywhere; }
+.question .question-options label { align-items: start; }
+.question .question-options input { margin-top: .25rem; }
+@media (max-width: 600px) { .study-controls .button { width: 100%; } }

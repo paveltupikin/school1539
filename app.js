@@ -90,8 +90,8 @@ function subjectPage() {
     <div class="subject-banner ${subject}"><div class="subject-title"><p class="eyebrow">${exams[exam]} / ПОДГОТОВКА</p><h1>${name}</h1><p>${desc}</p></div>
     <div class="mark" aria-hidden="true">${mark}</div><ul class="topics">${topics.map(t => `<li>${t}</li>`).join("")}</ul></div>
     <div class="format-grid"><article class="panel"><h2>Карточки</h2><p>Отвечайте по одному и сразу проверяйте результат.</p>${link(url + "/quiz", "Открыть карточки ↗︎")}</article>
-    <article class="panel"><h2>Пробник</h2><p>${exam === "oge" && subject === "math" ? "25 заданий учебного варианта. Общая проверка после сдачи." : "Решите демонстрационный вариант и узнайте балл."}</p>${link(url + "/test", "Открыть пробник ↗︎")}</article>
-    ${exam === "oge" && subject === "math" ? `<article class="panel"><h2>Лента заданий</h2>
+    <article class="panel"><h2>Пробники</h2><p>${exam === "oge" && subject === "russ" ? "100 заданий и 10 учебных работ. Задания 2–13 без изложения." : exam === "oge" && subject === "math" ? "25 заданий учебного варианта. Общая проверка после сдачи." : "Решите демонстрационный вариант и узнайте балл."}</p>${link(url + "/test", "Открыть пробник ↗︎")}</article>
+    ${exam === "oge" && ["math", "russ"].includes(subject) ? `<article class="panel"><h2>Лента заданий</h2>
       <p>Найдите задание по ID, указанному рядом с условием.</p>${link(url + "/tasks", "Открыть ленту ↗︎")}</article>` : ""}</div>
     ${exam === "ege" && subject === "history" ? '<p><a href="https://paveltupikin.github.io/historia/">Открыть тренажёр Historia ↗︎</a></p>' : ""}`);
 }
@@ -131,21 +131,28 @@ function need(role) {
 }
 
 async function taskFeed() {
-  const {tasks} = await api("/oge/math/tasks");
-  main.innerHTML = section('<a class="back" href="/oge/math">←︎ Математика</a>' +
-    title("ОГЭ / Математика", "Лента заданий") + '<section class="panel" id="task-feed"></section>', true);
+  const {tasks} = await api(`/oge/${subject}/tasks`);
+  main.innerHTML = section(`<a class="back" href="/oge/${subject}">←︎ ${subjects[subject][0]}</a>` +
+    title(`ОГЭ / ${subjects[subject][0]}`, "Лента заданий") + '<section class="panel" id="task-feed"></section>', true);
   questionUI.mountFeed(document.querySelector("#task-feed"), tasks, params.get("id"));
 }
 
-function training() {
+async function training() {
   if (need("student")) return;
   const quiz = mode === "quiz";
   const assignment = params.has("assignment") ? Number(params.get("assignment")) : undefined;
   const math = exam === "oge" && subject === "math";
+  const russ = exam === "oge" && subject === "russ";
+  const catalog = russ && !assignment ? await api("/oge/russ/catalog") : null;
+  const practiceBase = `/oge/${subject}/${mode}`;
+  const historyKey = `server-${user.id}-oge-russ`;
   let shared = null;
   const show = html => {
     main.innerHTML = section(`<a class="back" href="${assignment ? "/account" : `/${exam}/${subject}`}">←︎ Назад</a>` +
-      title(course(exam, subject), quiz ? "Карточки" : "Пробник") + html, true);
+      title(course(exam, subject), quiz ? "Карточки" : "Пробник") +
+      (catalog ? questionUI.studyControls(catalog, quiz, params, practiceBase) : "") + html +
+      (russ && quiz ? questionUI.historyHTML(historyKey, "/oge/russ/quiz") : ""), true);
+    questionUI.bindStudyControls(main);
   };
   const rememberContext = attempt => {
     const panel = main.querySelector(".question-context");
@@ -153,11 +160,12 @@ function training() {
     if (panel && context) shared = {id: context.id, open: panel.open};
   };
   const start = async () => {
-    const attempt = await api("/start", {exam, subject, mode, assignment});
+    const attempt = await api("/start", {exam, subject, mode, assignment,
+      ...(russ && !assignment ? {test: params.get("test"), topic: params.get("topic"), id: params.get("id"), review: params.get("review") === "1"} : {})});
     if (attempt.result) return done(attempt.result);
-    const skip = math && quiz && !assignment;
+    const skip = (math || russ) && quiz && !assignment;
     show(`<form class="panel" id="attempt">
-      ${attempt.questions.some(task => task.kind === "written") ? questionUI.writtenNotice : ""}
+      ${russ && !quiz ? questionUI.russianNotice : attempt.questions.some(task => task.kind === "written") ? (russ ? questionUI.russianNotice : questionUI.writtenNotice) : ""}
       ${attempt.deadline ? '<p class="timer" role="timer"></p>' : ""}
       ${questionUI.fields(attempt.questions, quiz, shared)}
       <div class="actions">${button(quiz ? "Проверить ответ" : "Сдать пробник")}
@@ -197,15 +205,16 @@ function training() {
     }
   };
   function done(result) {
-    show(`<section class="panel stack"><h2 id="result" tabindex="-1">${result.expired ? "Время вышло" : `Верно: ${result.correct} из ${result.total}`}</h2>
+    if (russ && quiz) questionUI.remember(historyKey, result.questions, result.details);
+    show(`<section class="panel stack"><h2 id="result" tabindex="-1">${result.expired ? "Время вышло" : result.total ? `Верно: ${result.correct} из ${result.total}` : "Сохранено для самопроверки"}</h2>
       ${result.details.some(detail => detail[2] === null) ? "<p>Счёт относится к заданиям с коротким ответом. Развёрнутые решения сверьте с разбором ниже.</p>" : ""}
       ${questionUI.sourceLine(result.source)}
-      ${questionUI.results(result.questions, result.details, math ? "/oge/math/tasks" : "")}
+      ${questionUI.results(result.questions, result.details, math || russ ? `/oge/${subject}/tasks` : "")}
       ${quiz ? `<form id="next">${button("Следующая карточка ↗︎")}${notice}</form>` : ""}</section>`);
     document.querySelector("#result").focus();
     if (quiz) form("next", start);
   }
-  show(`<form class="panel" id="start"><p>${quiz ? (math ? "В заданиях № 1–5 используется общая схема. После ответа откроется разбор." : "Карточки повторяются после прохождения демонстрационного набора.") : "Если учитель ограничил время, таймер запустится при начале."}</p>${button("Начать ↗︎")}${notice}</form>`);
+  show(`<form class="panel" id="start">${russ ? questionUI.russianNotice : ""}<p>${quiz ? (russ ? "Выберите тему. Проверяйте ответ, читайте памятку и возвращайтесь к ошибкам через историю карточек." : math ? "В заданиях № 1–5 используется общая схема. После ответа откроется разбор." : "Карточки повторяются после прохождения демонстрационного набора.") : "Если учитель ограничил время, таймер запустится при начале."}</p>${button("Начать ↗︎")}${notice}</form>`);
   form("start", start);
 }
 
@@ -279,7 +288,7 @@ async function boot() {
   navigation();
   if (exam === "account") return account();
   if (exam === "teacher") return teacher();
-  if (exam === "oge" && subject === "math" && mode === "tasks") return taskFeed();
+  if (exam === "oge" && ["math", "russ"].includes(subject) && mode === "tasks") return taskFeed();
   if (mode) return training();
   if (subject) return subjectPage();
   home();
